@@ -11,7 +11,7 @@ from PIL import Image as PILImage
 from reportlab.lib.pagesizes import A4
 from reportlab.lib import colors
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image, PageBreak
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image, PageBreak, KeepTogether
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.lib.units import cm
@@ -48,58 +48,108 @@ def load_font():
 HAS_FONT = load_font()
 
 # ==========================================
-# 2. PDF 生成引擎 (ReportLab - 優先使用)
+# 2. PDF 生成引擎 (ReportLab - 模組化表格修正版)
 # ==========================================
 def generate_pdf_report(base_info, sections_data, photos, captions):
     buffer = io.BytesIO()
+    # 設定邊距
     doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=1.5*cm, leftMargin=1.5*cm, topMargin=1.5*cm, bottomMargin=1.5*cm)
     elements = []
+    
     font_name = 'ChineseFont' if HAS_FONT else 'Helvetica'
     styles = getSampleStyleSheet()
     
-    # 樣式定義
+    # --- 樣式定義 ---
     title_style = ParagraphStyle('Title_TC', parent=styles['Heading1'], fontName=font_name, fontSize=20, leading=24, alignment=1, textColor=colors.HexColor("#0056b3"))
     sub_style = ParagraphStyle('Sub_TC', parent=styles['Normal'], fontName=font_name, fontSize=12, leading=16, alignment=1, textColor=colors.gray)
     normal_style = ParagraphStyle('Normal_TC', parent=styles['Normal'], fontName=font_name, fontSize=11, leading=15)
+    header_style = ParagraphStyle('Header_TC', parent=styles['Normal'], fontName=font_name, fontSize=11, leading=15, textColor=colors.white, alignment=1) # 表頭文字置中
     fail_style = ParagraphStyle('Fail_TC', parent=styles['Normal'], fontName=font_name, fontSize=11, leading=15, textColor=colors.red)
 
-    # 內容生成 (標題 -> 基本資料 -> 表格 -> 照片)
+    # --- A. 文件標題 ---
     elements.append(Paragraph("水土保持處理與維護現場查核表", title_style))
     elements.append(Spacer(1, 0.5*cm))
     elements.append(Paragraph(f"專案名稱：{base_info['專案名稱']}", sub_style))
     elements.append(Spacer(1, 1*cm))
 
-    data_info = [[f"檢查日期：{base_info['日期']}", f"檢查人員：{base_info['人員']}"], [f"天氣狀況：{base_info['天氣']}", f"施工狀態：{base_info['狀態']}"]]
+    # --- B. 基本資料 (獨立表格) ---
+    data_info = [
+        [f"檢查日期：{base_info['日期']}", f"檢查人員：{base_info['人員']}"], 
+        [f"天氣狀況：{base_info['天氣']}", f"施工狀態：{base_info['狀態']}"]
+    ]
     t_info = Table(data_info, colWidths=[9*cm, 9*cm])
-    t_info.setStyle(TableStyle([('FONTNAME', (0,0), (-1,-1), font_name), ('GRID', (0,0), (-1,-1), 0.5, colors.grey), ('BACKGROUND', (0,0), (-1,-1), colors.whitesmoke), ('PADDING', (0,0), (-1,-1), 8)]))
+    t_info.setStyle(TableStyle([
+        ('FONTNAME', (0,0), (-1,-1), font_name),
+        ('GRID', (0,0), (-1,-1), 0.5, colors.grey),
+        ('BACKGROUND', (0,0), (-1,-1), colors.whitesmoke),
+        ('PADDING', (0,0), (-1,-1), 8)
+    ]))
     elements.append(t_info)
     elements.append(Spacer(1, 0.5*cm))
 
-    table_data = [[Paragraph("檢查項目與標準", normal_style), Paragraph("結果", normal_style)]]
+    # --- C. 檢查項目 (改為多個小表格堆疊) ---
+    
+    # C-1. 通用表頭 (藍色底)
+    # 我們先畫一個只有標題的表格
+    header_data = [[Paragraph("檢查項目與標準", header_style), Paragraph("結果", header_style)]]
+    t_header = Table(header_data, colWidths=[14*cm, 4*cm])
+    t_header.setStyle(TableStyle([
+        ('FONTNAME', (0,0), (-1,-1), font_name),
+        ('GRID', (0,0), (-1,-1), 0.5, colors.black),
+        ('BACKGROUND', (0,0), (-1,-1), colors.HexColor("#0056b3")), # 藍底
+        ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
+        ('PADDING', (0,0), (-1,-1), 6)
+    ]))
+    elements.append(t_header)
+
+    # C-2. 迴圈生成各區塊表格
     section_titles = ["一、裸露區域防護", "二、臨時滯洪沉砂池", "三、排水系統", "四、已完成設施", "五、安全與防災"]
+    
     for i, section in enumerate(sections_data):
+        # 每個區塊的資料容器
+        section_table_data = []
+        
+        # 1. 區塊標題列 (灰色底)
         title_para = Paragraph(f"<b>{section_titles[i]}</b>", normal_style)
-        table_data.append([title_para, ""])
+        section_table_data.append([title_para, ""]) # 第二欄空著準備合併
+        
+        # 2. 該區塊的細項
         for label, result_data in section.items():
             result = result_data['result']
             item_content = Paragraph(f"<b>{label}</b><br/><font color='grey' size='9'>{result_data['standard']}</font>", normal_style)
-            res_content = Paragraph(f"<b>{result}</b>", fail_style) if result == "不符合" else Paragraph(result, normal_style)
-            table_data.append([item_content, res_content])
+            
+            if result == "不符合":
+                res_content = Paragraph(f"<b>{result}</b>", fail_style)
+            else:
+                res_content = Paragraph(result, normal_style)
+            
+            section_table_data.append([item_content, res_content])
 
-    t_main = Table(table_data, colWidths=[14*cm, 4*cm])
-    main_style = [('FONTNAME', (0,0), (-1,-1), font_name), ('GRID', (0,0), (-1,-1), 0.5, colors.black), ('BACKGROUND', (0,0), (1,0), colors.HexColor("#0056b3")), ('TEXTCOLOR', (0,0), (1,0), colors.white), ('ALIGN', (1,0), (1,-1), 'CENTER'), ('VALIGN', (0,0), (-1,-1), 'MIDDLE'), ('PADDING', (0,0), (-1,-1), 6)]
-    current_row = 1
-    for i in range(len(sections_data)):
-        main_style.append(('BACKGROUND', (0, current_row), (1, current_row), colors.lightgrey))
-        main_style.append(('SPAN', (0, current_row), (1, current_row)))
-        current_row += len(sections_data[i]) + 1
-    t_main.setStyle(TableStyle(main_style))
-    elements.append(t_main)
+        # 3. 建立該區塊的表格物件
+        t_section = Table(section_table_data, colWidths=[14*cm, 4*cm])
+        
+        # 4. 設定樣式
+        t_section.setStyle(TableStyle([
+            ('FONTNAME', (0,0), (-1,-1), font_name),
+            ('GRID', (0,0), (-1,-1), 0.5, colors.black),
+            ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
+            ('ALIGN', (1,0), (1,-1), 'CENTER'), # 結果欄置中
+            ('PADDING', (0,0), (-1,-1), 6),
+            # 標題列樣式 (第一列)
+            ('BACKGROUND', (0,0), (1,0), colors.lightgrey), # 灰底
+            ('SPAN', (0,0), (1,0)), # 合併欄位
+        ]))
+        
+        # 5. 加入 PDF 元素串流 (這就是解決分頁問題的關鍵)
+        # 透過 KeepTogether 確保標題跟第一項不要被切開 (選用，這邊直接 append 也很穩)
+        elements.append(t_section)
 
+    # --- D. 照片區 ---
     if photos:
-        elements.append(PageBreak())
+        elements.append(PageBreak()) # 強制換頁
         elements.append(Paragraph("現場照片紀錄", title_style))
         elements.append(Spacer(1, 0.5*cm))
+        
         photo_rows = []
         temp_row = []
         for idx, photo in enumerate(photos):
@@ -109,17 +159,43 @@ def generate_pdf_report(base_info, sections_data, photos, captions):
                 aspect = img_height / float(img_width)
                 desired_width = 8*cm
                 desired_height = desired_width * aspect
-                if desired_height > 10*cm: desired_height = 10*cm; desired_width = desired_height / aspect
-                img_buffer = io.BytesIO(); img.save(img_buffer, format='JPEG'); img_buffer.seek(0)
+                
+                # 限制圖片最大高度，避免一張圖把版面撐爆
+                if desired_height > 10*cm: 
+                    desired_height = 10*cm
+                    desired_width = desired_height / aspect
+                
+                img_buffer = io.BytesIO()
+                img.save(img_buffer, format='JPEG')
+                img_buffer.seek(0)
                 rl_img = Image(img_buffer, width=desired_width, height=desired_height)
+                
                 caption_text = captions[idx] if idx < len(captions) else ""
-                temp_row.append([rl_img, Spacer(1, 0.2*cm), Paragraph(f"照片 {idx+1}: {caption_text}", normal_style)])
-                if len(temp_row) == 2: photo_rows.append(temp_row); temp_row = []
-            except: pass
-        if temp_row: temp_row.append("")
+                
+                # 組合：圖片 + 空隙 + 說明
+                cell_content = [rl_img, Spacer(1, 0.2*cm), Paragraph(f"照片 {idx+1}: {caption_text}", normal_style)]
+                
+                temp_row.append(cell_content)
+                
+                if len(temp_row) == 2: 
+                    photo_rows.append(temp_row)
+                    temp_row = []
+            except: 
+                pass
+        
+        if temp_row: 
+            temp_row.append("") # 補空位
+            photo_rows.append(temp_row)
+            
         if photo_rows:
             t_photo = Table(photo_rows, colWidths=[9*cm, 9*cm])
-            t_photo.setStyle(TableStyle([('VALIGN', (0,0), (-1,-1), 'TOP'), ('ALIGN', (0,0), (-1,-1), 'CENTER')]))
+            t_photo.setStyle(TableStyle([
+                ('VALIGN', (0,0), (-1,-1), 'TOP'), 
+                ('ALIGN', (0,0), (-1,-1), 'CENTER'),
+                ('LEFTPADDING', (0,0), (-1,-1), 2),
+                ('RIGHTPADDING', (0,0), (-1,-1), 2),
+                ('BOTTOMPADDING', (0,0), (-1,-1), 10)
+            ]))
             elements.append(t_photo)
 
     doc.build(elements)
@@ -174,7 +250,7 @@ def generate_html_report(base_info, sections_data, photos, captions):
         <style>
             /* 模擬 A4 紙張的背景 */
             body {{
-                background-color: #525659; /* 深灰背景，像 PDF 閱讀器 */
+                background-color: #525659;
                 margin: 0;
                 padding: 20px;
                 font-family: "Microsoft JhengHei", "Heiti TC", sans-serif;
@@ -190,36 +266,22 @@ def generate_html_report(base_info, sections_data, photos, captions):
                 box-sizing: border-box;
                 position: relative;
             }}
-            
-            /* 標題樣式 */
             h1 {{ color: #0056b3; text-align: center; margin-bottom: 5px; font-size: 24px; }}
             h2 {{ color: #666; text-align: center; margin-top: 0; font-size: 16px; font-weight: normal; margin-bottom: 20px; }}
-            
-            /* 基本資料表 */
             .info-table {{ width: 100%; border-collapse: collapse; margin-bottom: 20px; background: #f8f9fa; }}
             .info-table td {{ border: 1px solid #ccc; padding: 8px; }}
-            
-            /* 檢查項目主表 */
             .main-table {{ width: 100%; border-collapse: collapse; border: 2px solid #000; }}
             .main-table th {{ background-color: #0056b3; color: white; padding: 8px; border: 1px solid #000; }}
             .main-table td {{ border: 1px solid #000; padding: 6px; vertical-align: middle; }}
-            
-            /* 區塊標題 */
             .section-header td {{ background-color: #e0e0e0; font-weight: bold; text-align: left; padding: 8px; }}
-            
-            /* 內容樣式 */
             .item-name {{ font-weight: bold; font-size: 14px; }}
             .item-std {{ color: #666; font-size: 12px; margin-top: 2px; }}
             .res-pass {{ text-align: center; }}
             .res-fail {{ text-align: center; color: red; font-weight: bold; }}
-            
-            /* 照片網格 (模擬 PDF 表格) */
             .photo-grid {{ display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin-top: 20px; }}
             .photo-item {{ border: 1px solid #ddd; padding: 5px; text-align: center; page-break-inside: avoid; }}
             .photo-item img {{ max-width: 100%; max-height: 250px; display: block; margin: 0 auto; }}
             .caption {{ margin-top: 5px; font-size: 12px; color: #333; }}
-            
-            /* 列印設定 (確保列印時也是 A4) */
             @media print {{
                 body {{ background: none; padding: 0; }}
                 .page {{ box-shadow: none; margin: 0; width: 100%; }}
@@ -231,12 +293,10 @@ def generate_html_report(base_info, sections_data, photos, captions):
         <div class="page">
             <h1>水土保持處理與維護現場查核表</h1>
             <h2>專案名稱：{base_info['專案名稱']}</h2>
-            
             <table class="info-table">
                 <tr><td>檢查日期：{base_info['日期']}</td><td>檢查人員：{base_info['人員']}</td></tr>
                 <tr><td>天氣狀況：{base_info['天氣']}</td><td>施工狀態：{base_info['狀態']}</td></tr>
             </table>
-            
             <table class="main-table">
                 <thead>
                     <tr><th width="75%">檢查項目與標準</th><th width="25%">結果</th></tr>
@@ -245,7 +305,6 @@ def generate_html_report(base_info, sections_data, photos, captions):
                     {rows_html}
                 </tbody>
             </table>
-            
             <div style="page-break-before: always; margin-top: 30px;">
                 <h1 style="font-size: 20px; border-bottom: 2px solid #0056b3; padding-bottom: 5px;">現場照片紀錄</h1>
                 {img_html}
